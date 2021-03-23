@@ -54,13 +54,20 @@ app.get(epPublicSpells, (req, res) => {
 
 // Retrieve specific spell information
 app.get(`${epSpellDetails}`, requireAuth, (req, res) => {
+  console.log("Goppher")
   req.app.get('db')('spells')
   .where({user_id: req.user.id, id: req.params.id})
   .first()
   .then((displaySpell) => {
     delete displaySpell.is_deleted
     // console.log(displaySpells[0]);
-    res.send(displaySpell)
+    req.app.get('db')('tags')
+    .where({spell_id: displaySpell.id})
+    .then(tags => {
+      displaySpell.tags = tags
+      console.log(displaySpell)
+      res.send(displaySpell)
+    })
   })
 })
 
