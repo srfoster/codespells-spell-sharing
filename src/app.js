@@ -26,6 +26,8 @@ let epLogin = '/login'
 let epSignup = '/signup'
 let epSpellIndex = '/spells'
 let epSpellDetails = '/spells/:id'
+// TODO: update this endpoint 
+let epPublicSpellDetails = '/secret/:id'
 let epPublicSpells = '/gallery'
 let epWizardDetails = '/wizards/:id'
 let epSpellsFork = '/spells/:id/fork'
@@ -39,8 +41,9 @@ let attachTagsToSpells =
     for(let i = 0; i < spells.length; i++){
       delete spells[i].is_deleted
       
-      let tags = await
-      app.get('db')('tags').where({spell_id: spells[i].id})
+      let tags = await app.get('db')('tags')
+        .where({spell_id: spells[i].id})
+        .orderBy(`name`, 'asc')
 
       spells[i].tags = tags
     }
@@ -48,19 +51,27 @@ let attachTagsToSpells =
 }
 
 // Retrieve spells on viewing Dashboard
-// FIXME: sorting should occur on server side before sending back response
+// FIXME: add sort_direction variable based on the "sort_direction" query for ascending or descending
 app.get(epSpellIndex, requireAuth, async (req, res) => {
   let page = req.query.page ? req.query.page : 1;
   let page_size = req.query.page_size ? req.query.page_size : 10;
+  let searchTerm = req.query.search ? `%${req.query.search}%` : `%%`
+
+  // Should all sorts take the name as a secondary sort by default?
+  let sortQuery = req.query.sort ? req.query.sort : 'name'
+  let sort_direction = req.query.sort_direction ? req.query.sort_direction : 'asc'
 
   let totalSpells = await req.app.get('db')('spells')
     .count('id')
     .where({user_id: req.user.id, is_deleted: false})
+    .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
 
   let spells = await req.app.get('db')('spells')
     .where({user_id: req.user.id, is_deleted: false})
+    .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
     .limit(page_size)
     .offset(page_size * (page-1))
+    .orderBy(`${sortQuery}`, sort_direction)
 
   spells = await attachTagsToSpells(spells)
   res.send({spells, total: Number(totalSpells[0].count)})
@@ -70,15 +81,20 @@ app.get(epSpellIndex, requireAuth, async (req, res) => {
 app.get(epPublicSpells, async (req, res) => {
   let page = req.query.page ? req.query.page : 1;
   let page_size = req.query.page_size ? req.query.page_size : 9;
+  let searchTerm = req.query.search ? `%${req.query.search}%` : `%%`
+  let sortQuery = req.query.sort ? req.query.sort : 'name'
 
   let totalSpells = await req.app.get('db')('spells')
-  .count('id')
-  .where({is_public: true, is_deleted: false})
+    .count('id')
+    .where({is_public: true, is_deleted: false})
+    .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
 
   let spells = await req.app.get('db')('spells')
     .where({is_public: true, is_deleted: false})
+    .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
     .limit(page_size)
     .offset(page_size * (page-1))
+    .orderBy(`${sortQuery}`, 'asc')
 
   spells = await attachTagsToSpells(spells)
   res.send({spells, total: Number(totalSpells[0].count)})
@@ -87,11 +103,31 @@ app.get(epPublicSpells, async (req, res) => {
 // Retrieve specific spell information
 app.get(`${epSpellDetails}`, requireAuth, (req, res) => {
   req.app.get('db')('spells')
-  .where({user_id: req.user.id, id: req.params.id})
+  .where({user_id: req.user.id, id: req.params.id, is_deleted: false})
   .first()
   .then((displaySpell) => {
-    delete displaySpell.is_deleted
+    // delete displaySpell.is_deleted
     // console.log(displaySpells[0]);
+
+    req.app.get('db')('tags')
+    .where({spell_id: displaySpell.id})
+    .then(tags => {
+      displaySpell.tags = tags
+      res.send(displaySpell)
+    })
+  })
+})
+
+// Retrieve specific spell information if public
+app.get(`${epPublicSpellDetails}`, (req, res) => {
+  req.app.get('db')('spells')
+  .where({id: req.params.id, is_public: true, is_deleted: false})
+  .first()
+  .then((displaySpell) => {
+    // delete displaySpell.is_deleted
+    console.log(displaySpell);
+
+    // TODO: Send back message if undefined
 
     req.app.get('db')('tags')
     .where({spell_id: displaySpell.id})
@@ -107,22 +143,27 @@ app.get(`${epWizardDetails}`, requireAuth, async (req, res) => {
   let userId = req.params.id === 'me' ? req.user.id : req.params.id;
   let page = req.query.page ? req.query.page : 1;
   let page_size = req.query.page_size ? req.query.page_size : 9;
+  let searchTerm = req.query.search ? `%${req.query.search}%` : `%%`
+  let sortQuery = req.query.sort ? req.query.sort : 'name'
 
   let totalSpells = await req.app.get('db')('spells')
-  .count('id')
-  .where({user_id: userId, is_deleted: false, is_public: true})
+    .count('id')
+    .where({user_id: userId, is_deleted: false, is_public: true})
+    .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
 
   let user = await req.app.get('db')('users')
-  .where({id: userId})
-  .first()
+    .where({id: userId})
+    .first()
 
   let spells = await req.app.get('db')('spells')
     .where({user_id: userId, is_deleted: false, is_public: true})
+    .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
     .limit(page_size)
     .offset(page_size * (page-1))
+    .orderBy(`${sortQuery}`, 'asc')
   
   let userData = {...user, spells}
-  console.log(userData);
+  // console.log(userData);
 
   spells = await attachTagsToSpells(spells)
   delete userData.password
@@ -135,19 +176,26 @@ app.get(`${epSpellTagsIndex}`, requireAuth, (req, res) => {
   req.app.get('db')('tags')
   .where({spell_id: req.params.id})
   .then((displayTags) => {
-    console.log(displayTags)
+    // console.log(displayTags)
     res.send(displayTags)
   })
 })
 
 // Post new tag to specific spell
 app.post(`${epSpellTags}`, requireAuth, async (req, res) => {
-  // TODO: don't allow repeat tags
-
   let spells = await req.app.get('db')('spells')
+    .count('id')
     .where({id: req.params.id, user_id: req.user.id})
+  if (Number(spells[0].count) === 0) return res.status(401).send({error: "You can't add tags to a spell you don't own."})
 
-  if (spells.length === 0){return res.sendStatus(401)}
+  let tags = await req.app.get('db')('tags')
+    .where({spell_id: req.params.id})
+
+  for(let i=0; i<tags.length; i++){
+    if (tags[0].name === req.params.tag) {
+      return res.status(401).send({error: "Selected tag already exists for this spell."})
+    }
+  }
 
   await req.app.get('db')('tags')
   .insert({name: req.params.tag, spell_id: req.params.id})
@@ -184,7 +232,7 @@ app.delete(`${epSpellDetails}`, requireAuth, (req, res) => {
       if(spells.length){
         res.send(spells[0])
       } else {
-        console.log('Inside else');
+        // console.log('Inside else');
         res.status(401).send({error: 'Spell is not yours! Go away!'})
       }
     })
@@ -229,7 +277,7 @@ app.post(`${epSpellsFork}`, requireAuth, async (req, res, next) =>{
   // console.log("Req: ", req.spells);
   // let public = user_id === req.user.id ? is_public: true : is_public: false;
 
-            console.log(req.body)
+  // console.log(req.body)
   let displaySpell = await req.app.get('db')('spells')
   //FIXME: currently blocks all private spells, even if owned by that user
   .where({id: req.params.id, is_public: true})
@@ -237,7 +285,7 @@ app.post(`${epSpellsFork}`, requireAuth, async (req, res, next) =>{
 
   if(displaySpell){
     const {name, description, text} = displaySpell
-    console.log(req.user.id)
+    // console.log(req.user.id)
     let newSpell = await req.app.get('db')('spells')
     .insert({user_id: req.user.id, name: name+' (Fork)', description: description,
               text: text, date_created: new Date(), date_modified: new Date()})
@@ -301,7 +349,7 @@ app.post(epSignup, (req, res, next) => {
   req.app.get('db')('users')
     .where({username: req.body.username})
     .then(async (usersWithUsername) => {
-      console.log("Inside then");
+      // console.log("Inside then");
       let { username, password } = req.body
 
       if (usersWithUsername.length !== 0){return res.status(400).send({error: "Username already taken"})}
@@ -350,5 +398,5 @@ module.exports = {
   epWizardDetails,
   epSpellsFork,
   epSpellTags,
-  epSpellTagsGet: epSpellTagsIndex
+  epSpellTagsIndex
 }

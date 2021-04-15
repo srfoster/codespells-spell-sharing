@@ -1,7 +1,7 @@
 const knex = require('knex')
 const { expect } = require('chai')
 const jwt = require('jsonwebtoken')
-const { app, epHome, epLogin, epSignup, epSpellIndex, epSpellDetails, epPublicSpells, epWizardDetails, epSpellsFork, epSpellTags, epSpellTagsGet } = require('../src/app')
+const { app, epHome, epLogin, epSignup, epSpellIndex, epSpellDetails, epPublicSpells, epWizardDetails, epSpellsFork, epSpellTags, epSpellTagsIndex } = require('../src/app')
 const helpers = require('./test-helpers')
 const config = require('../src/config')
 const bcrypt = require('bcryptjs')
@@ -16,6 +16,8 @@ describe('App', () => {
     testTags,
   } = helpers.makeSpellFixtures()
   const testUser = testUsers[0]
+
+  let byName = (a,b) => a.name < b.name ? -1 : 1;
 
   before('make knex instance', () => {
     db = knex({
@@ -38,7 +40,8 @@ describe('App', () => {
       extraSpells.push({
         id: testSpells.length + i,
         user_id: 1,
-        name: 'Seeded extra',
+        // Zz's ensure these sort after all other spells
+        name: 'Zz Seeded extra '+i,
         text: '(Hello Extra)',
         description: 'This is a bonus',
         is_deleted: false,
@@ -81,8 +84,7 @@ describe('App', () => {
         .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
         .expect(200)
         .then((res) => {
-          //TODO: further revise to reflect the offset and limit
-          // expect(res.body.spells.length).to.equal(testSpells.filter((s) => s.user_id === testUsers[0].id && s.is_deleted === false).length)
+          expect(res.body.total).to.equal(testSpells.filter((s) => s.user_id === testUsers[0].id && s.is_deleted === false).length)
           expect(res.body.spells.length).to.equal(10)
         })
     })
@@ -103,7 +105,7 @@ describe('App', () => {
         })
     })
 
-    it.only(`does not provide spells owned by another user`, () => {
+    it(`does not provide spells owned by another user`, () => {
       return supertest(app)
         .get(epSpellIndex)
         .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
@@ -128,7 +130,7 @@ describe('App', () => {
     })
 
     // page and page_size defined at top of describe
-    it(`responds with the page ${page} and ${page_size} results when given ?page=${page}&page_size=${page_size}`, () => {
+    it.only(`responds with the page ${page} and ${page_size} results when given ?page=${page}&page_size=${page_size}`, () => {
       return supertest(app)
       .get(`/spells?page=${page}&page_size=${page_size}`)
       .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
@@ -140,9 +142,12 @@ describe('App', () => {
             .select('*')
             .where({user_id: testUsers[0].id, is_deleted: false})
 
+        console.log(res.body.spells.map(spell => spell.name));
+        console.log(allTestSpells.sort(byName).map(spell => spell.name));
+
         expect(res.body.spells.length).to.equal(page_size)
         expect(res.body.spells.map(spell => spell.id).toString())
-          .to.equal(allTestSpells.map(spell => spell.id).slice(page_size * (page-1), page_size*page).toString())
+          .to.equal(allTestSpells.sort(byName).map(spell => spell.id).slice(page_size * (page-1), page_size*page).toString())
       })
     })
 
@@ -163,6 +168,49 @@ describe('App', () => {
           .to.equal(allTestSpells.map(spell => spell.id).slice(0, 10).toString())
       })
     })
+
+    // it responds with any matching spells when given search query
+    // responds with "Apple Storm" spell when given search query ?search=apple
+    // underscores within search queries should be translated to spaces
+    
+    it(`responds with the spell "Apple Storm" when given the query ?search=apple`, () => {
+      return supertest(app)
+      .get(`/spells?search=seeded`)
+      .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
+      .expect(200)
+      .then(async (res) => {
+        let searchTerm = '%seeded%'
+        
+        let allSearchResults = 
+          await db
+            .from('spells')
+            .select('*')
+            .where({user_id: testUsers[0].id, is_deleted: false})
+            .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
+
+        expect(res.body.spells[0].name).to.equal(allSearchResults[0].name)
+        expect(res.body.total).to.equal(allSearchResults.length)
+      })
+    })
+
+    let sortQuery = 'description'
+    it(`responds with the spells sorted by ${sortQuery} when given ?sort=${sortQuery}`, () => {
+      return supertest(app)
+      .get(`/spells?sort=${sortQuery}`)
+      .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
+      .expect(200)
+      .then(async (res) => {
+        let sortedSpells = 
+          await db
+            .from('spells')
+            .select('*')
+            .where({user_id: testUsers[0].id, is_deleted: false})
+            .orderBy(`${sortQuery}`, 'asc')
+
+        expect(res.body.spells[0].description.toString()).to.equal(sortedSpells[0].description.toString())
+      })
+    })
+
 
     // for(let i=extraSpells[0].id; i<extraSpells.length + extraSpells[0].id; i++){
     //   console.log(i);
@@ -196,11 +244,13 @@ describe('App', () => {
         .get(epPublicSpells)
         .expect(200)
         .then((res) => {
-          expect(JSON.stringify(res.body.spells.map(spell => spell.id).sort((a,b) => a-b)))
-            .to.equal(JSON.stringify(testSpells
+          expect(res.body.spells.map(spell => spell.id).toString())
+            .to.equal(testSpells
               .map(spell => spell.is_public === true && spell.is_deleted === false ? spell.id : "")
               .filter(spell => spell !== "")
-              .sort((a,b) => a-b)))
+              .slice(0, 9)
+              .toString()
+            )
         })
     })
 
@@ -291,6 +341,42 @@ describe('App', () => {
         expect(res.body.spells.length).to.equal(9)
         expect(res.body.spells.map(spell => spell.id).toString())
           .to.equal(allTestSpells.map(spell => spell.id).slice(0, 9).toString())
+      })
+    })
+
+    it(`responds with the spell "Cozy Cabin" when given the query ?search=cozy`, () => {
+      return supertest(app)
+      .get(`/gallery?search=cozy`)
+      .expect(200)
+      .then(async (res) => {
+        let searchTerm = '%cozy%'
+        
+        let allSearchResults = 
+          await db
+            .from('spells')
+            .select('*')
+            .where({is_deleted: false, is_public: true})
+            .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
+
+        expect(res.body.spells[0].name).to.equal(allSearchResults[0].name)
+        expect(res.body.total).to.equal(allSearchResults.length)
+      })
+    })
+
+    let sortQuery = 'description'
+    it(`responds with the spells sorted by ${sortQuery} when given ?sort=${sortQuery}`, () => {
+      return supertest(app)
+      .get(`/gallery?sort=${sortQuery}`)
+      .expect(200)
+      .then(async (res) => {
+        let sortedSpells = 
+          await db
+            .from('spells')
+            .select('*')
+            .where({is_public: true, is_deleted: false})
+            .orderBy(`${sortQuery}`, 'asc')
+
+        expect(res.body.spells[0].description.toString()).to.equal(sortedSpells[0].description.toString())
       })
     })
 
@@ -408,14 +494,13 @@ describe('App', () => {
           await db
           .from('spells')
           .select('*')
-          .where({user_id: testUsers[0].id, is_deleted: false})
+          .where({user_id: testUsers[0].id, is_deleted: false, is_public: true})
           .then(spells => {
             expect(spells.length).to.equal(res.body.total)
           })
         })
     })
 
-    // >>>> NEW <<<<
     it(`only shows spells tagged as public`, async () => {
       await supertest(app)
       .get(`/wizards/${testUsers[0].id}`)
@@ -468,7 +553,7 @@ describe('App', () => {
           await db
             .from('spells')
             .select('*')
-            .where({is_public: true, is_deleted: false})
+            .where({user_id: testUsers[0].id, is_public: true, is_deleted: false})
 
         expect(res.body.spells.length).to.equal(page_size)
         expect(res.body.spells.map(spell => spell.id).toString())
@@ -486,7 +571,7 @@ describe('App', () => {
           await db
             .from('spells')
             .select('*')
-            .where({is_public: true, is_deleted: false})
+            .where({user_id: testUsers[0].id, is_public: true, is_deleted: false})
 
         expect(res.body.spells.length).to.equal(9)
         expect(res.body.spells.map(spell => spell.id).toString())
@@ -494,9 +579,47 @@ describe('App', () => {
       })
     })
 
+    it(`responds with the spell "Cozy Cabin" when given the query ?search=cozy`, () => {
+      return supertest(app)
+      .get(`/wizards/${testUsers[0].id}?search=cozy`)
+      .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
+      .expect(200)
+      .then(async (res) => {
+        let searchTerm = '%cozy%'
+        
+        let allSearchResults = 
+          await db
+            .from('spells')
+            .select('*')
+            .where({user_id: testUsers[0].id, is_deleted: false, is_public: true})
+            .whereRaw("LOWER(name) like LOWER(?)", [searchTerm])
+
+        expect(res.body.spells[0].name).to.equal(allSearchResults[0].name)
+        expect(res.body.total).to.equal(allSearchResults.length)
+      })
+    })
+
+    let sortQuery = 'description'
+    it(`responds with the spells sorted by ${sortQuery} when given ?sort=${sortQuery}`, () => {
+      return supertest(app)
+      .get(`/wizards/${testUsers[0].id}?sort=${sortQuery}`)
+      .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
+      .expect(200)
+      .then(async (res) => {
+        let sortedSpells = 
+          await db
+            .from('spells')
+            .select('*')
+            .where({user_id: testUsers[0].id, is_public: true, is_deleted: false})
+            .orderBy(`${sortQuery}`, 'asc')
+
+        expect(res.body.spells[0].description.toString()).to.equal(sortedSpells[0].description.toString())
+      })
+    })
+
   })
 
-  describe(`GET ${epSpellTagsGet}`, () => {
+  describe(`GET ${epSpellTagsIndex}`, () => {
     beforeEach('insert users', () =>
       helpers.seedUsers(
         db,
@@ -591,9 +714,15 @@ describe('App', () => {
         .expect(401)
     })
 
-    // only allows authorized tags?
+    it(`responds 401 if submitting a repeat tag to the same spell`, () => {
+      return supertest(app)
+        .post(`/spells/1/tags/fire_magic`)
+        .set('Authorization', helpers.makeAuthHeader(testUsers[0]))
+        .expect(401)
+    })
 
-    // Does not allow repeat tags
+    //TODO:
+    // only allows authorized tags?
 
   })
 
